@@ -53,24 +53,65 @@ class FileBrowserController extends Controller
     // AUTH — Laravel session-based (replaces Go JWT)
     // =========================================================================
 
-    public function login(Request $request): JsonResponse|Response
+    public function login(Request $request): Response
     {
         $user = auth()->user();
         if (!$user) {
             return response('unauthorized', 401);
         }
-        // Return a session-based token the Vue frontend expects
-        $token = base64_encode(json_encode([
-            'id' => $user->id,
-            'name' => $user->name ?? $user->email,
-            'exp' => time() + 7200,
-        ]));
-        return $this->withCacheHeaders(response()->json($token));
+
+        $token = $this->generateJwt($user);
+        return response($token, 200)
+            ->header('Content-Type', 'text/plain')
+            ->header('Cache-Control', 'no-cache, no-store, must-revalidate');
     }
 
-    public function renew(Request $request): JsonResponse|Response
+    public function renew(Request $request): Response
     {
         return $this->login($request);
+    }
+
+    /**
+     * Generate a JWT token matching Go filebrowser's format.
+     * The Vue frontend decodes this with jwt-decode library.
+     */
+    protected function generateJwt($user): string
+    {
+        $header = $this->base64url(json_encode(['alg' => 'HS256', 'typ' => 'JWT']));
+        $payload = $this->base64url(json_encode([
+            'user' => [
+                'id' => $user->id,
+                'username' => $user->name ?? $user->email ?? 'user',
+                'locale' => 'en',
+                'viewMode' => 'list',
+                'singleClick' => false,
+                'perm' => [
+                    'admin' => method_exists($user, 'isAdmin') && $user->isAdmin(),
+                    'execute' => false,
+                    'create' => config('filebrowser.permissions.create', true),
+                    'rename' => config('filebrowser.permissions.rename', true),
+                    'modify' => config('filebrowser.permissions.modify', true),
+                    'delete' => config('filebrowser.permissions.delete', true),
+                    'share' => config('filebrowser.permissions.share', true),
+                    'download' => config('filebrowser.permissions.download', true),
+                ],
+                'commands' => [],
+                'lockPassword' => true,
+                'hideDotfiles' => false,
+                'dateFormat' => false,
+            ],
+            'iss' => 'File Browser',
+            'iat' => time(),
+            'exp' => time() + 7200,
+        ]));
+        $secret = config('app.key', 'filebrowser-laravel-secret');
+        $signature = $this->base64url(hash_hmac('sha256', $header . '.' . $payload, $secret, true));
+        return $header . '.' . $payload . '.' . $signature;
+    }
+
+    protected function base64url(string $data): string
+    {
+        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
     }
 
     // =========================================================================
