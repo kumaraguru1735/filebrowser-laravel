@@ -51,4 +51,19 @@ return [
     | Display name shown in the header.
     */
     'name' => env('FILEBROWSER_NAME', 'File Browser'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Event Hooks
+    |--------------------------------------------------------------------------
+    | Shell commands to run on file events. Env vars: FILE, SCOPE, TRIGGER, USERNAME, DESTINATION
+    | Example: 'upload' => ['echo "$FILE uploaded by $USERNAME"']
+    */
+    'hooks' => [
+        // 'upload' => [],
+        // 'save' => [],
+        // 'delete' => [],
+        // 'copy' => [],
+        // 'rename' => [],
+    ],
 ];

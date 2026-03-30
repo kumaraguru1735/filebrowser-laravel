@@ -6,28 +6,55 @@ use Illuminate\Support\Facades\Route;
 $prefix = ltrim(config('filebrowser.prefix', '/file-browser'), '/');
 $middleware = config('filebrowser.middleware', ['web', 'auth']);
 
+// Health check (no auth)
+Route::get($prefix . '/health', [FileBrowserController::class, 'health']);
+
+// Public share routes (no auth)
+Route::middleware('web')->prefix($prefix)->group(function () {
+    Route::get('api/public/share/{hash}/{path?}', [FileBrowserController::class, 'publicShare'])->where('path', '.*');
+    Route::get('api/public/dl/{hash}/{path?}', [FileBrowserController::class, 'publicDownload'])->where('path', '.*');
+});
+
+// Authenticated routes
 Route::middleware($middleware)->prefix($prefix)->group(function () {
-    // Frontend (Vue SPA) — catch-all
+    // Frontend SPA
     Route::get('/', [FileBrowserController::class, 'index'])->name('filebrowser.index');
 
-    // API routes
+    // API
     Route::prefix('api')->group(function () {
-        Route::get('resources{path?}', [FileBrowserController::class, 'resourceGet'])->where('path', '.*')->name('filebrowser.resource.get');
-        Route::post('resources{path?}', [FileBrowserController::class, 'resourcePost'])->where('path', '.*')->name('filebrowser.resource.post');
-        Route::put('resources{path?}', [FileBrowserController::class, 'resourcePut'])->where('path', '.*')->name('filebrowser.resource.put');
-        Route::delete('resources{path?}', [FileBrowserController::class, 'resourceDelete'])->where('path', '.*')->name('filebrowser.resource.delete');
-        Route::match(['patch'], 'resources{path?}', [FileBrowserController::class, 'resourcePatch'])->where('path', '.*')->name('filebrowser.resource.patch');
+        // Auth
+        Route::post('login', [FileBrowserController::class, 'login']);
+        Route::post('renew', [FileBrowserController::class, 'renew']);
 
-        Route::get('raw{path?}', [FileBrowserController::class, 'raw'])->where('path', '.*')->name('filebrowser.raw');
-        Route::get('preview/{size}{path}', [FileBrowserController::class, 'preview'])->where('path', '.*')->name('filebrowser.preview');
-        Route::get('search{path?}', [FileBrowserController::class, 'search'])->where('path', '.*')->name('filebrowser.search');
-        Route::get('usage{path?}', [FileBrowserController::class, 'usage'])->where('path', '.*')->name('filebrowser.usage');
+        // Resources (CRUD)
+        Route::get('resources{path?}', [FileBrowserController::class, 'resourceGet'])->where('path', '.*');
+        Route::post('resources{path?}', [FileBrowserController::class, 'resourcePost'])->where('path', '.*');
+        Route::put('resources{path?}', [FileBrowserController::class, 'resourcePut'])->where('path', '.*');
+        Route::delete('resources{path?}', [FileBrowserController::class, 'resourceDelete'])->where('path', '.*');
+        Route::patch('resources{path?}', [FileBrowserController::class, 'resourcePatch'])->where('path', '.*');
 
-        // Auth — return current user info (for Vue frontend)
-        Route::post('login', [FileBrowserController::class, 'login'])->name('filebrowser.login');
-        Route::post('renew', [FileBrowserController::class, 'renew'])->name('filebrowser.renew');
+        // Download / Raw
+        Route::get('raw{path?}', [FileBrowserController::class, 'raw'])->where('path', '.*');
+
+        // Preview / Thumbnails
+        Route::get('preview/{size}{path}', [FileBrowserController::class, 'preview'])->where('path', '.*');
+
+        // Subtitles
+        Route::get('subtitle{path}', [FileBrowserController::class, 'subtitle'])->where('path', '.*');
+
+        // Search
+        Route::get('search{path?}', [FileBrowserController::class, 'search'])->where('path', '.*');
+
+        // Disk usage
+        Route::get('usage{path?}', [FileBrowserController::class, 'usage'])->where('path', '.*');
+
+        // Shares
+        Route::get('shares', [FileBrowserController::class, 'shareList']);
+        Route::get('share{path?}', [FileBrowserController::class, 'shareGet'])->where('path', '.*');
+        Route::post('share{path?}', [FileBrowserController::class, 'shareCreate'])->where('path', '.*');
+        Route::delete('share/{hash}', [FileBrowserController::class, 'shareDelete']);
     });
 
-    // Catch-all for Vue Router HTML5 history mode
-    Route::get('{any}', [FileBrowserController::class, 'index'])->where('any', '.*')->name('filebrowser.catchall');
+    // Vue Router catch-all
+    Route::get('{any}', [FileBrowserController::class, 'index'])->where('any', '.*');
 });

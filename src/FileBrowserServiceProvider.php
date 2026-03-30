@@ -31,6 +31,14 @@ class FileBrowserServiceProvider extends ServiceProvider
             __DIR__ . '/../resources/views' => resource_path('views/vendor/filebrowser'),
         ], 'filebrowser-views');
 
+        // Load migrations
+        $this->loadMigrationsFrom(__DIR__ . '/database/migrations');
+
+        // Publish migrations
+        $this->publishes([
+            __DIR__ . '/database/migrations' => database_path('migrations'),
+        ], 'filebrowser-migrations');
+
         // Load routes
         $this->loadRoutesFrom(__DIR__ . '/routes/web.php');
     }
