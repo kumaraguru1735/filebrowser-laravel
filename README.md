@@ -1,32 +1,104 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/filebrowser/filebrowser/master/branding/banner.png" width="550"/>
-</p>
+# File Browser for Laravel
 
-[![Build](https://github.com/filebrowser/filebrowser/actions/workflows/ci.yaml/badge.svg)](https://github.com/filebrowser/filebrowser/actions/workflows/ci.yaml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/filebrowser/filebrowser/v2)](https://goreportcard.com/report/github.com/filebrowser/filebrowser/v2)
-[![Version](https://img.shields.io/github/release/filebrowser/filebrowser.svg)](https://github.com/filebrowser/filebrowser/releases/latest)
+A beautiful file manager for Laravel applications. Laravel port of [filebrowser/filebrowser](https://github.com/filebrowser/filebrowser) — the Go backend is replaced with Laravel controllers while keeping the original Vue 3 frontend.
 
-File Browser provides a file managing interface within a specified directory and it can be used to upload, delete, preview and edit your files. It is a **create-your-own-cloud**-kind of software where you can just install it on your server, direct it to a path and access your files through a nice web interface.
+## Features
 
-## Documentation
+- Browse files and directories (list & grid view)
+- Code editor (Ace) with syntax highlighting for 30+ languages
+- Preview images, videos, audio, and PDFs
+- Upload files with drag & drop
+- Download files or directories as ZIP
+- Real-time file search
+- Copy, move, rename, delete operations
+- Permission management (chmod)
+- Disk usage display
+- Keyboard shortcuts
+- Multi-language support (20+ languages)
+- Light & dark theme
 
-Documentation on how to install, configure, and contribute to this project is hosted at [filebrowser.org](https://filebrowser.org).
+## Installation
 
-## Project Status
+```bash
+composer require kumaraguru/filebrowser-laravel
+```
 
-This project is a finished product which fulfills its goal: be a single binary web File Browser which can be run by anyone anywhere. That means that File Browser is currently on **maintenance-only** mode. Therefore, please note the following:
+### Publish Assets
 
-- It can take a while until someone gets back to you. Please be patient.
-- [Issues](https://github.com/filebrowser/filebrowser/issues) are meant to track bugs. Unrelated issues will be converted into [discussions](https://github.com/filebrowser/filebrowser/discussions).
-- The priority is triaging issues, addressing security issues and reviewing pull requests meant to solve bugs.
-- No new features are planned. Pull requests for new features are not guaranteed to be reviewed.
+```bash
+php artisan vendor:publish --tag=filebrowser-assets
+php artisan vendor:publish --tag=filebrowser-config
+```
 
-Please read [@hacdias' personal reflection](https://hacdias.com/2026/03/11/filebrowser/) on the project status.
+## Configuration
 
-## Contributing
+Edit `config/filebrowser.php`:
 
-Contributions are always welcome. To start contributing to this project, read our [guidelines](CONTRIBUTING.md) first.
+```php
+return [
+    // URL prefix
+    'prefix' => '/file-browser',
+
+    // Middleware
+    'middleware' => ['web', 'auth'],
+
+    // Root path resolver
+    'root_resolver' => function ($request) {
+        return '/home/' . auth()->user()->username;
+    },
+
+    // Blocked file extensions
+    'blocked_extensions' => ['phtml', 'phar'],
+
+    // Display name
+    'name' => 'File Browser',
+];
+```
+
+### Root Path Resolver
+
+The `root_resolver` config determines which directory each user can access:
+
+```php
+// Per-user home directory
+'root_resolver' => fn($request) => '/home/' . auth()->user()->username,
+
+// Static path
+'root_resolver' => fn($request) => storage_path('app/files'),
+```
+
+### Model Integration
+
+Alternatively, add `getFileBrowserRoot()` to your User model:
+
+```php
+class User extends Authenticatable
+{
+    public function getFileBrowserRoot(): string
+    {
+        return '/home/' . $this->username;
+    }
+}
+```
+
+## Usage
+
+After installation, visit `yourapp.com/file-browser` (or your configured prefix).
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/resources/{path}` | List directory or get file info |
+| POST | `/api/resources/{path}` | Upload file or create directory |
+| PUT | `/api/resources/{path}` | Update file content |
+| DELETE | `/api/resources/{path}` | Delete file or directory |
+| PATCH | `/api/resources/{path}` | Copy or move |
+| GET | `/api/raw/{path}` | Download file or ZIP |
+| GET | `/api/preview/{size}/{path}` | Image preview |
+| GET | `/api/search/{path}` | Search files |
+| GET | `/api/usage/{path}` | Disk usage |
 
 ## License
 
-[Apache License 2.0](LICENSE) © File Browser Contributors
+Apache License 2.0 (same as original filebrowser)

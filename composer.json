@@ -1,0 +1,32 @@
+{
+    "name": "kumaraguru/filebrowser-laravel",
+    "description": "File Browser for Laravel — a beautiful file manager with code editor, preview, and search. Laravel port of filebrowser/filebrowser.",
+    "keywords": ["laravel", "file-manager", "filebrowser", "file-browser", "code-editor"],
+    "license": "Apache-2.0",
+    "type": "library",
+    "authors": [
+        {
+            "name": "Kumaraguru",
+            "email": "kumaraguru1735m@gmail.com"
+        }
+    ],
+    "require": {
+        "php": "^8.1",
+        "illuminate/support": "^10.0|^11.0|^12.0",
+        "illuminate/routing": "^10.0|^11.0|^12.0",
+        "illuminate/http": "^10.0|^11.0|^12.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "FileBrowser\\": "src/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "FileBrowser\\FileBrowserServiceProvider"
+            ]
+        }
+    },
+    "minimum-stability": "stable"
+}
