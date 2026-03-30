@@ -14,6 +14,29 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 class FileBrowserController extends Controller
 {
     // =========================================================================
+    // PERMISSION HELPER
+    // =========================================================================
+
+    protected function checkPerm(string $permission): void
+    {
+        $perms = config('filebrowser.permissions', []);
+        if (!empty($perms) && isset($perms[$permission]) && $perms[$permission] === false) {
+            abort(403, "Permission denied: {$permission}");
+        }
+    }
+
+    // =========================================================================
+    // CACHE-CONTROL HELPER
+    // =========================================================================
+
+    protected function withCacheHeaders(JsonResponse $response): JsonResponse
+    {
+        return $response->withHeaders([
+            'Cache-Control' => 'no-cache, no-store, must-revalidate',
+        ]);
+    }
+
+    // =========================================================================
     // FRONTEND — serve Vue SPA
     // =========================================================================
 
@@ -42,7 +65,7 @@ class FileBrowserController extends Controller
             'name' => $user->name ?? $user->email,
             'exp' => time() + 7200,
         ]));
-        return response()->json($token);
+        return $this->withCacheHeaders(response()->json($token));
     }
 
     public function renew(Request $request): JsonResponse|Response
@@ -57,10 +80,12 @@ class FileBrowserController extends Controller
 
     public function resourceGet(Request $request, string $path = '/'): JsonResponse
     {
+        // No permission check needed for resourceGet (always allowed)
+
         $root = $this->getRootPath($request);
         $resolved = $this->resolve($root, $path);
         if (!$resolved) {
-            return response()->json('not found', 404);
+            return $this->withCacheHeaders(response()->json('not found', 404));
         }
 
         $info = $this->fileInfo($resolved, $root);
@@ -91,7 +116,7 @@ class FileBrowserController extends Controller
             $info['numFiles'] = count(array_filter($items, fn($i) => !$i['isDir']));
             $info['sorting'] = ['by' => $sortBy, 'asc' => $orderAsc];
 
-            return response()->json($info);
+            return $this->withCacheHeaders(response()->json($info));
         }
 
         // File — include content for text files
@@ -111,8 +136,9 @@ class FileBrowserController extends Controller
             }
         }
 
-        return response()->json($info)
-            ->header('ETag', $this->etag($resolved));
+        return $this->withCacheHeaders(
+            response()->json($info)->header('ETag', $this->etag($resolved))
+        );
     }
 
     // =========================================================================
@@ -122,15 +148,20 @@ class FileBrowserController extends Controller
 
     public function resourcePost(Request $request, string $path = '/'): JsonResponse|Response
     {
+        $this->checkPerm('create');
+
         $root = $this->getRootPath($request);
         $fullPath = $this->buildPath($root, $path);
         if (!$fullPath) {
             return response()->json('forbidden', 403);
         }
 
+        $dirMode = config('filebrowser.dir_mode', 0755);
+        $fileMode = config('filebrowser.file_mode', 0644);
+
         // Create directory (path ends with /)
         if (str_ends_with($path, '/')) {
-            @mkdir($fullPath, 0755, true);
+            @mkdir($fullPath, $dirMode, true);
             $this->fireHook('upload', $fullPath, $root);
             return response('', 200);
         }
@@ -150,12 +181,13 @@ class FileBrowserController extends Controller
         // Handle multipart file upload
         if ($request->hasFile('files')) {
             $dir = is_dir($fullPath) ? $fullPath : dirname($fullPath);
-            if (!is_dir($dir)) @mkdir($dir, 0755, true);
+            if (!is_dir($dir)) @mkdir($dir, $dirMode, true);
             foreach ($request->file('files') as $file) {
                 $name = preg_replace('/[\/\\\0]/', '', $file->getClientOriginalName());
                 if (empty($name) || $name === '.' || $name === '..') continue;
                 $this->validateExtension($dir . '/' . $name);
                 $file->move($dir, $name);
+                @chmod($dir . '/' . $name, $fileMode);
             }
             $this->fireHook('upload', $dir, $root);
             return response('', 200);
@@ -163,9 +195,10 @@ class FileBrowserController extends Controller
 
         // Raw body upload (Go-style: body is file content)
         $dir = dirname($fullPath);
-        if (!is_dir($dir)) @mkdir($dir, 0755, true);
+        if (!is_dir($dir)) @mkdir($dir, $dirMode, true);
         file_put_contents($fullPath, $request->getContent());
-        @sync();
+        clearstatcache(true, $fullPath);
+        @chmod($fullPath, $fileMode);
 
         $this->fireHook('upload', $fullPath, $root);
 
@@ -180,6 +213,8 @@ class FileBrowserController extends Controller
 
     public function resourcePut(Request $request, string $path = '/'): Response
     {
+        $this->checkPerm('modify');
+
         if (str_ends_with($path, '/')) {
             return response('method not allowed', 405);
         }
@@ -191,6 +226,7 @@ class FileBrowserController extends Controller
         }
 
         file_put_contents($resolved, $request->getContent());
+        clearstatcache(true, $resolved);
 
         $this->fireHook('save', $resolved, $root);
 
@@ -205,6 +241,8 @@ class FileBrowserController extends Controller
 
     public function resourceDelete(Request $request, string $path = '/'): Response
     {
+        $this->checkPerm('delete');
+
         if ($path === '/' || $path === '') {
             return response('forbidden', 403);
         }
@@ -248,6 +286,13 @@ class FileBrowserController extends Controller
         $override = $request->boolean('override');
         $rename = $request->boolean('rename');
 
+        // Permission check based on action
+        if ($action === 'copy') {
+            $this->checkPerm('create');
+        } else {
+            $this->checkPerm('rename');
+        }
+
         if (empty($destination)) {
             return response('destination required', 400);
         }
@@ -288,8 +333,9 @@ class FileBrowserController extends Controller
             } while (file_exists($dstResolved));
         }
 
+        $dirMode = config('filebrowser.dir_mode', 0755);
         $dstDir = dirname($dstResolved);
-        if (!is_dir($dstDir)) @mkdir($dstDir, 0755, true);
+        if (!is_dir($dstDir)) @mkdir($dstDir, $dirMode, true);
 
         if ($action === 'copy') {
             if (is_dir($srcResolved)) {
@@ -315,6 +361,8 @@ class FileBrowserController extends Controller
 
     public function raw(Request $request, string $path = '/')
     {
+        $this->checkPerm('download');
+
         $root = $this->getRootPath($request);
         $resolved = $this->resolve($root, $path);
         if (!$resolved) {
@@ -373,13 +421,28 @@ class FileBrowserController extends Controller
     {
         $extMap = ['tar' => '.tar', 'targz' => '.tar.gz', 'tarbz2' => '.tar.bz2', 'tarxz' => '.tar.xz', 'tarlz4' => '.tar.lz4', 'tarsz' => '.tar.sz', 'tarbr' => '.tar.br', 'tarzst' => '.tar.zst'];
         $ext = $extMap[$algo] ?? '.tar.gz';
-        $compFlag = match ($algo) {
-            'tar' => '', 'targz' => 'z', 'tarbz2' => 'j', 'tarxz' => 'J',
-            default => 'z',
-        };
 
         $tmp = tempnam(sys_get_temp_dir(), 'fb_tar_') . $ext;
-        $cmd = 'tar -c' . $compFlag . 'f ' . escapeshellarg($tmp) . ' -C ' . escapeshellarg($dir) . ' . 2>&1';
+
+        // Pipe-based compression for formats not natively supported by tar
+        $pipeCmd = match ($algo) {
+            'tarlz4' => 'tar cf - -C ' . escapeshellarg($dir) . ' . | lz4 > ' . escapeshellarg($tmp),
+            'tarsz'  => 'tar cf - -C ' . escapeshellarg($dir) . ' . | snzip > ' . escapeshellarg($tmp),
+            'tarbr'  => 'tar cf - -C ' . escapeshellarg($dir) . ' . | brotli > ' . escapeshellarg($tmp),
+            'tarzst' => 'tar cf - -C ' . escapeshellarg($dir) . ' . | zstd > ' . escapeshellarg($tmp),
+            default  => null,
+        };
+
+        if ($pipeCmd !== null) {
+            $cmd = $pipeCmd . ' 2>&1';
+        } else {
+            $compFlag = match ($algo) {
+                'tar' => '', 'targz' => 'z', 'tarbz2' => 'j', 'tarxz' => 'J',
+                default => 'z',
+            };
+            $cmd = 'tar -c' . $compFlag . 'f ' . escapeshellarg($tmp) . ' -C ' . escapeshellarg($dir) . ' . 2>&1';
+        }
+
         exec($cmd, $output, $exitCode);
 
         if ($exitCode !== 0 || !file_exists($tmp)) {
@@ -411,9 +474,9 @@ class FileBrowserController extends Controller
         // Thumbnail sizes (matching Go: thumb=256, big=1080)
         $maxDim = $size === 'thumb' ? 256 : 1080;
 
-        // Cache thumbnails
+        // Cache thumbnails — key includes size, stable prefix for glob-based invalidation
         $cacheDir = storage_path('app/filebrowser/thumbnails/' . $size);
-        $cacheKey = md5($resolved . filemtime($resolved));
+        $cacheKey = md5($resolved . $size) . '-' . filemtime($resolved);
         $cachePath = $cacheDir . '/' . $cacheKey . '.jpg';
 
         if (file_exists($cachePath)) {
@@ -463,21 +526,21 @@ class FileBrowserController extends Controller
     }
 
     // =========================================================================
-    // SEARCH — streaming search
+    // SEARCH — streaming NDJSON search
     // Mirrors: Go search.go searchHandler
     // =========================================================================
 
-    public function search(Request $request, string $path = '/'): JsonResponse
+    public function search(Request $request, string $path = '/'): StreamedResponse|JsonResponse
     {
         $root = $this->getRootPath($request);
         $resolved = $this->resolve($root, $path ?: '/');
         if (!$resolved || !is_dir($resolved)) {
-            return response()->json([]);
+            return $this->withCacheHeaders(response()->json([]));
         }
 
         $query = $request->query('query', '');
         if (empty($query)) {
-            return response()->json([]);
+            return $this->withCacheHeaders(response()->json([]));
         }
 
         // Parse search conditions (Go-style: type:image, case:sensitive)
@@ -493,10 +556,38 @@ class FileBrowserController extends Controller
             $searchTerm = trim(str_replace('case:sensitive', '', $searchTerm));
         }
 
-        $results = [];
-        $this->searchDir($resolved, $root, $searchTerm, $conditions, $caseSensitive, $results, 0, 200);
+        return response()->stream(function () use ($resolved, $root, $searchTerm, $conditions, $caseSensitive) {
+            echo "\n"; // heartbeat
+            if (ob_get_level()) ob_flush();
+            flush();
+            $this->streamSearch($resolved, $root, $searchTerm, $conditions, $caseSensitive, 0, 200);
+        }, 200, [
+            'Content-Type' => 'application/x-ndjson',
+            'Cache-Control' => 'no-cache, no-store, must-revalidate',
+        ]);
+    }
 
-        return response()->json($results);
+    private function streamSearch(string $dir, string $root, string $pattern, array $conditions, bool $caseSensitive, int $depth, int $limit, int &$count = 0): void
+    {
+        if ($count >= $limit || $depth > 20) return;
+        foreach (scandir($dir) ?: [] as $item) {
+            if ($item === '.' || $item === '..') continue;
+            if ($count >= $limit) return;
+            $fullPath = $dir . '/' . $item;
+            $matches = $caseSensitive ? str_contains($item, $pattern) : stripos($item, $pattern) !== false;
+            if ($matches) {
+                $info = $this->fileInfo($fullPath, $root);
+                if (!isset($conditions['type']) || $info['type'] === $conditions['type']) {
+                    echo json_encode($info) . "\n";
+                    if (ob_get_level()) ob_flush();
+                    flush();
+                    $count++;
+                }
+            }
+            if (is_dir($fullPath)) {
+                $this->streamSearch($fullPath, $root, $pattern, $conditions, $caseSensitive, $depth + 1, $limit, $count);
+            }
+        }
     }
 
     // =========================================================================
@@ -509,13 +600,13 @@ class FileBrowserController extends Controller
         $root = $this->getRootPath($request);
         $resolvedRoot = realpath($root);
         if (!$resolvedRoot) {
-            return response()->json(['total' => 0, 'used' => 0]);
+            return $this->withCacheHeaders(response()->json(['total' => 0, 'used' => 0]));
         }
 
         $total = disk_total_space($resolvedRoot) ?: 0;
         $used = (int) trim(shell_exec('du -sb ' . escapeshellarg($resolvedRoot) . ' 2>/dev/null | cut -f1') ?: '0');
 
-        return response()->json(['total' => $total, 'used' => $used]);
+        return $this->withCacheHeaders(response()->json(['total' => $total, 'used' => $used]));
     }
 
     // =========================================================================
@@ -525,16 +616,24 @@ class FileBrowserController extends Controller
 
     public function shareList(Request $request): JsonResponse
     {
-        $userId = auth()->id();
-        $shares = FileBrowserShare::where('user_id', $userId)->get();
-        return response()->json($shares->map(fn($s) => [
+        $user = auth()->user();
+        $isAdmin = method_exists($user, 'isAdmin') && $user->isAdmin();
+
+        $query = FileBrowserShare::query();
+        if (!$isAdmin) {
+            $query->where('user_id', $user->id);
+        }
+
+        $shares = $query->orderBy('user_id')->orderBy('expires_at')->get();
+
+        return $this->withCacheHeaders(response()->json($shares->map(fn($s) => [
             'hash' => $s->hash,
             'path' => $s->path,
             'expire' => $s->expires_at ? $s->expires_at->timestamp : 0,
             'userID' => $s->user_id,
             'passwordHash' => $s->password_hash ? '***' : '',
             'token' => $s->token ?? '',
-        ]));
+        ])));
     }
 
     public function shareGet(Request $request, string $path = '/'): JsonResponse
@@ -542,22 +641,24 @@ class FileBrowserController extends Controller
         $shares = FileBrowserShare::where('user_id', auth()->id())
             ->where('path', '/' . ltrim($path, '/'))
             ->get();
-        return response()->json($shares->map(fn($s) => [
+        return $this->withCacheHeaders(response()->json($shares->map(fn($s) => [
             'hash' => $s->hash,
             'path' => $s->path,
             'expire' => $s->expires_at ? $s->expires_at->timestamp : 0,
             'userID' => $s->user_id,
             'passwordHash' => $s->password_hash ? '***' : '',
             'token' => $s->token ?? '',
-        ]));
+        ])));
     }
 
     public function shareCreate(Request $request, string $path = '/'): JsonResponse
     {
+        $this->checkPerm('share');
+
         $root = $this->getRootPath($request);
         $resolved = $this->resolve($root, $path);
         if (!$resolved) {
-            return response()->json('not found', 404);
+            return $this->withCacheHeaders(response()->json('not found', 404));
         }
 
         $password = $request->input('password', '');
@@ -596,14 +697,14 @@ class FileBrowserController extends Controller
             'expires_at' => $expiresAt,
         ]);
 
-        return response()->json([
+        return $this->withCacheHeaders(response()->json([
             'hash' => $share->hash,
             'path' => $share->path,
             'expire' => $share->expires_at ? $share->expires_at->timestamp : 0,
             'userID' => $share->user_id,
             'passwordHash' => $share->password_hash ? '***' : '',
             'token' => $token,
-        ]);
+        ]));
     }
 
     public function shareDelete(Request $request, string $hash): Response
@@ -651,7 +752,7 @@ class FileBrowserController extends Controller
             return response('not found', 404);
         }
 
-        return response()->json($this->fileInfo($resolved, $root));
+        return $this->withCacheHeaders(response()->json($this->fileInfo($resolved, $root)));
     }
 
     public function publicDownload(Request $request, string $hash, string $path = '/')
@@ -675,8 +776,19 @@ class FileBrowserController extends Controller
 
         $fullPath = rtrim($share->path, '/') . '/' . ltrim($path, '/');
         $resolved = $this->resolve($root, $fullPath);
-        if (!$resolved || !is_file($resolved)) {
+        if (!$resolved) {
             return response('not found', 404);
+        }
+
+        // Directory download — create ZIP archive
+        if (is_dir($resolved)) {
+            $zipName = basename($resolved) . '.zip';
+            $tmp = tempnam(sys_get_temp_dir(), 'fb_zip_');
+            $zip = new \ZipArchive();
+            $zip->open($tmp, \ZipArchive::OVERWRITE);
+            $this->addDirToZip($zip, $resolved, '');
+            $zip->close();
+            return response()->download($tmp, $zipName, ['Content-Type' => 'application/zip'])->deleteFileAfterSend(true);
         }
 
         return response()->download($resolved, basename($resolved));
@@ -732,7 +844,143 @@ class FileBrowserController extends Controller
 
     public function health(): JsonResponse
     {
-        return response()->json(['status' => 'OK']);
+        return $this->withCacheHeaders(response()->json(['status' => 'OK']));
+    }
+
+    // =========================================================================
+    // TUS — Resumable Upload Protocol
+    // =========================================================================
+
+    public function tusPost(Request $request, string $path = '/'): Response
+    {
+        $this->checkPerm('create');
+
+        $root = $this->getRootPath($request);
+        $fullPath = $this->buildPath($root, $path);
+        if (!$fullPath) {
+            return response('forbidden', 403);
+        }
+
+        $this->validateExtension($fullPath);
+
+        $uploadLength = (int) $request->header('Upload-Length', 0);
+        if ($uploadLength <= 0) {
+            return response('Upload-Length required', 400);
+        }
+
+        $dirMode = config('filebrowser.dir_mode', 0755);
+        $dir = dirname($fullPath);
+        if (!is_dir($dir)) @mkdir($dir, $dirMode, true);
+
+        // Create empty file
+        file_put_contents($fullPath, '');
+        clearstatcache(true, $fullPath);
+
+        // Store TUS metadata
+        $tusId = md5($fullPath . microtime(true));
+        $tusData = [
+            'path' => $fullPath,
+            'length' => $uploadLength,
+            'offset' => 0,
+            'created' => time(),
+        ];
+        file_put_contents('/tmp/fb_tus_' . $tusId, json_encode($tusData));
+
+        $prefix = rtrim(config('filebrowser.prefix', '/file-browser'), '/');
+        $location = $prefix . '/api/tus/' . $tusId;
+
+        return response('', 201)
+            ->header('Location', $location)
+            ->header('Tus-Resumable', '1.0.0')
+            ->header('Upload-Offset', '0');
+    }
+
+    public function tusHead(Request $request, string $id): Response
+    {
+        $tusFile = '/tmp/fb_tus_' . $id;
+        if (!file_exists($tusFile)) {
+            return response('not found', 404);
+        }
+
+        $tusData = json_decode(file_get_contents($tusFile), true);
+        if (!$tusData) {
+            return response('not found', 404);
+        }
+
+        return response('', 200)
+            ->header('Tus-Resumable', '1.0.0')
+            ->header('Upload-Offset', (string) $tusData['offset'])
+            ->header('Upload-Length', (string) $tusData['length'])
+            ->header('Cache-Control', 'no-store');
+    }
+
+    public function tusPatch(Request $request, string $id): Response
+    {
+        $tusFile = '/tmp/fb_tus_' . $id;
+        if (!file_exists($tusFile)) {
+            return response('not found', 404);
+        }
+
+        $tusData = json_decode(file_get_contents($tusFile), true);
+        if (!$tusData) {
+            return response('not found', 404);
+        }
+
+        $requestOffset = (int) $request->header('Upload-Offset', -1);
+        if ($requestOffset !== $tusData['offset']) {
+            return response('conflict', 409);
+        }
+
+        $chunk = $request->getContent();
+        $chunkSize = strlen($chunk);
+
+        if ($tusData['offset'] + $chunkSize > $tusData['length']) {
+            return response('exceeds upload length', 400);
+        }
+
+        // Append chunk to file
+        $fp = fopen($tusData['path'], 'ab');
+        if (!$fp) {
+            return response('write error', 500);
+        }
+        fwrite($fp, $chunk);
+        fclose($fp);
+        clearstatcache(true, $tusData['path']);
+
+        $tusData['offset'] += $chunkSize;
+        file_put_contents($tusFile, json_encode($tusData));
+
+        // Upload complete
+        if ($tusData['offset'] >= $tusData['length']) {
+            @unlink($tusFile);
+
+            $fileMode = config('filebrowser.file_mode', 0644);
+            @chmod($tusData['path'], $fileMode);
+
+            $root = $this->getRootPath($request);
+            $this->fireHook('upload', $tusData['path'], $root);
+        }
+
+        return response('', 204)
+            ->header('Tus-Resumable', '1.0.0')
+            ->header('Upload-Offset', (string) $tusData['offset']);
+    }
+
+    public function tusDelete(Request $request, string $id): Response
+    {
+        $tusFile = '/tmp/fb_tus_' . $id;
+        if (!file_exists($tusFile)) {
+            return response('not found', 404);
+        }
+
+        $tusData = json_decode(file_get_contents($tusFile), true);
+        if ($tusData && isset($tusData['path']) && file_exists($tusData['path'])) {
+            @unlink($tusData['path']);
+        }
+        @unlink($tusFile);
+
+        return response('', 204)
+            ->header('Tus-Resumable', '1.0.0');
     }
 
     // =========================================================================
@@ -778,7 +1026,8 @@ class FileBrowserController extends Controller
         $path = '/' . ltrim($path, '/');
         $full = $root . $path;
         $parent = dirname($full);
-        if (!is_dir($parent)) @mkdir($parent, 0755, true);
+        $dirMode = config('filebrowser.dir_mode', 0755);
+        if (!is_dir($parent)) @mkdir($parent, $dirMode, true);
         $resolvedParent = realpath($parent);
         $resolvedRoot = realpath($root);
         if (!$resolvedParent || !$resolvedRoot || !str_starts_with($resolvedParent, $resolvedRoot)) return null;
@@ -847,10 +1096,14 @@ class FileBrowserController extends Controller
 
     protected function clearThumbnailCache(string $path): void
     {
-        $cacheDir = storage_path('app/filebrowser/thumbnails');
-        if (!is_dir($cacheDir)) return;
-        $key = md5($path . '*'); // Simplified — clear by prefix would be better
-        // In production, use a proper cache key strategy
+        $cacheBase = storage_path('app/filebrowser/thumbnails');
+        foreach (['thumb', 'big'] as $size) {
+            $dir = $cacheBase . '/' . $size;
+            if (!is_dir($dir)) continue;
+            // Find and delete all cache files for this path (any mtime)
+            $prefix = substr(md5($path . $size), 0, 8);
+            foreach (glob($dir . '/' . $prefix . '*.jpg') as $f) @unlink($f);
+        }
     }
 
     protected function fireHook(string $event, string $path, string $root, string $destination = ''): void
@@ -884,7 +1137,8 @@ class FileBrowserController extends Controller
 
     protected function copyDir(string $src, string $dst): void
     {
-        @mkdir($dst, 0755, true);
+        $dirMode = config('filebrowser.dir_mode', 0755);
+        @mkdir($dst, $dirMode, true);
         foreach (scandir($src) ?: [] as $item) {
             if ($item === '.' || $item === '..') continue;
             $s = $src . '/' . $item;
@@ -904,6 +1158,9 @@ class FileBrowserController extends Controller
         }
     }
 
+    /**
+     * @deprecated Use streamSearch() instead — kept for backward compatibility
+     */
     protected function searchDir(string $dir, string $root, string $pattern, array $conditions, bool $caseSensitive, array &$results, int $depth, int $limit): void
     {
         if (count($results) >= $limit || $depth > 20) return;

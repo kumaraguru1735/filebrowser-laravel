@@ -66,4 +66,29 @@ return [
         // 'copy' => [],
         // 'rename' => [],
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Permissions
+    |--------------------------------------------------------------------------
+    | Control which operations are allowed. Set to false to disable.
+    | Keys: create, modify, delete, rename, download, share
+    */
+    'permissions' => [
+        'create' => true,
+        'modify' => true,
+        'delete' => true,
+        'rename' => true,
+        'download' => true,
+        'share' => true,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Directory / File Mode
+    |--------------------------------------------------------------------------
+    | Default permissions for newly created directories and files.
+    */
+    'dir_mode' => 0755,
+    'file_mode' => 0644,
 ];

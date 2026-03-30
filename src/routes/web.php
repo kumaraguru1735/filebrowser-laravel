@@ -45,6 +45,12 @@ Route::middleware($middleware)->prefix($prefix)->group(function () {
         // Search
         Route::get('search{path?}', [FileBrowserController::class, 'search'])->where('path', '.*');
 
+        // TUS Resumable Uploads
+        Route::post('tus{path?}', [FileBrowserController::class, 'tusPost'])->where('path', '.*');
+        Route::match(['head'], 'tus/{id}', [FileBrowserController::class, 'tusHead']);
+        Route::patch('tus/{id}', [FileBrowserController::class, 'tusPatch']);
+        Route::delete('tus/{id}', [FileBrowserController::class, 'tusDelete']);
+
         // Disk usage
         Route::get('usage{path?}', [FileBrowserController::class, 'usage'])->where('path', '.*');
 
