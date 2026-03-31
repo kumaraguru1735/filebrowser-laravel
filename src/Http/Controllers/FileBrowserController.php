@@ -68,6 +68,23 @@ class FileBrowserController extends Controller
 
     public function renew(Request $request): Response
     {
+        // Fix #5216: validate the existing token before renewing
+        $existingToken = $request->header('X-Auth', '');
+        if ($existingToken) {
+            $parts = explode('.', $existingToken);
+            if (count($parts) === 3) {
+                $secret = config('app.key', 'filebrowser-laravel-secret');
+                $validSig = $this->base64url(hash_hmac('sha256', $parts[0] . '.' . $parts[1], $secret, true));
+                if (!hash_equals($validSig, $parts[2])) {
+                    return response('invalid token', 401);
+                }
+                // Check expiry
+                $payload = json_decode(base64_decode(strtr($parts[1], '-_', '+/')), true);
+                if ($payload && isset($payload['exp']) && $payload['exp'] < time()) {
+                    // Token expired — still renew if session is valid (Laravel auth handles this)
+                }
+            }
+        }
         return $this->login($request);
     }
 
@@ -136,7 +153,27 @@ class FileBrowserController extends Controller
             $items = [];
             foreach (scandir($resolved) ?: [] as $name) {
                 if ($name === '.' || $name === '..') continue;
-                $items[] = $this->fileInfo($resolved . '/' . $name, $root);
+                $childPath = $resolved . '/' . $name;
+                // Fix #5627: skip inaccessible subfolders instead of failing the whole listing
+                if (!is_readable($childPath)) continue;
+                try {
+                    $items[] = $this->fileInfo($childPath, $root);
+                } catch (\Throwable $e) {
+                    continue; // Skip files that can't be stat'd
+                }
+            }
+
+            // PR #5832: optional directory sizes (expensive — only when requested)
+            if ($request->boolean('dirSizes')) {
+                foreach ($items as &$item) {
+                    if ($item['isDir']) {
+                        $dirPath = $this->resolve($root, $item['path']);
+                        if ($dirPath) {
+                            $item['size'] = (int) trim(shell_exec('du -sb ' . escapeshellarg($dirPath) . ' 2>/dev/null | cut -f1') ?: '0');
+                        }
+                    }
+                }
+                unset($item);
             }
 
             // Sort: directories first, then by field
@@ -161,7 +198,9 @@ class FileBrowserController extends Controller
         }
 
         // File — include content for text files
-        if ($info['type'] === 'text' && $info['size'] < 10 * 1024 * 1024) {
+        // Fix #5294: cap at 5MB to prevent memory exhaustion DoS
+        $maxContentSize = min(5 * 1024 * 1024, (int) config('filebrowser.max_content_size', 5 * 1024 * 1024));
+        if ($info['type'] === 'text' && $info['size'] < $maxContentSize) {
             if ($request->header('X-Encoding') === 'true') {
                 $info['content'] = base64_encode(file_get_contents($resolved));
             } else {
@@ -199,6 +238,9 @@ class FileBrowserController extends Controller
 
         $dirMode = config('filebrowser.dir_mode', 0755);
         $fileMode = config('filebrowser.file_mode', 0644);
+
+        // PR #5658: quota check before upload
+        $this->checkQuota($root, $request->header('Content-Length', 0));
 
         // Create directory (path ends with /)
         if (str_ends_with($path, '/')) {
@@ -327,6 +369,10 @@ class FileBrowserController extends Controller
         $override = $request->boolean('override');
         $rename = $request->boolean('rename');
 
+        // Fix #5306: normalize paths — strip trailing slashes, clean double slashes
+        $path = rtrim($path, '/') ?: '/';
+        $destination = rtrim($destination, '/') ?: '/';
+
         // Permission check based on action
         if ($action === 'copy') {
             $this->checkPerm('create');
@@ -348,13 +394,14 @@ class FileBrowserController extends Controller
             return response('invalid destination', 403);
         }
 
-        // Prevent moving to root
-        if ($destination === '/') {
-            return response('cannot move to root', 403);
+        // Fix #5683: allow copy/move TO root (destination '/' is the user's root, not filesystem root)
+        // Only block moving a file to itself
+        if ($srcResolved === $dstResolved) {
+            return response('source and destination are the same', 400);
         }
 
-        // Prevent source being parent of destination
-        if (str_starts_with(realpath(dirname($dstResolved)) . '/', realpath($srcResolved) . '/')) {
+        // Prevent source being parent of destination (would create infinite recursion)
+        if (is_dir($srcResolved) && str_starts_with(realpath(dirname($dstResolved)) . '/', realpath($srcResolved) . '/')) {
             return response('cannot move into itself', 403);
         }
 
@@ -531,10 +578,12 @@ class FileBrowserController extends Controller
         if (extension_loaded('gd')) {
             $info = @getimagesize($resolved);
             if ($info && ($info[0] > $maxDim || $info[1] > $maxDim)) {
+                // Fix #2078: support more image formats for thumbnails
                 $img = match ($info['mime']) {
                     'image/jpeg' => @imagecreatefromjpeg($resolved),
                     'image/png' => @imagecreatefrompng($resolved),
-                    'image/gif' => @imagecreatefromgif($resolved),
+                    'image/gif' => null, // GIFs served as-is (animated)
+                    'image/bmp', 'image/x-ms-bmp' => function_exists('imagecreatefrombmp') ? @imagecreatefrombmp($resolved) : null,
                     'image/webp' => @imagecreatefromwebp($resolved),
                     default => null,
                 };
@@ -694,12 +743,20 @@ class FileBrowserController extends Controller
 
     public function shareCreate(Request $request, string $path = '/'): JsonResponse
     {
+        // Fix #5835/PR #5875: sharing requires both share AND download permissions
         $this->checkPerm('share');
+        $this->checkPerm('download');
 
         $root = $this->getRootPath($request);
         $resolved = $this->resolve($root, $path);
         if (!$resolved) {
             return $this->withCacheHeaders(response()->json('not found', 404));
+        }
+
+        // Fix #5239: prevent sharing the root directory (too broad)
+        $resolvedRoot = realpath($root);
+        if ($resolved === $resolvedRoot) {
+            return $this->withCacheHeaders(response()->json('Cannot share the root directory. Share a specific file or subdirectory instead.', 403));
         }
 
         $password = $request->input('password', '');
@@ -904,9 +961,19 @@ class FileBrowserController extends Controller
 
         $this->validateExtension($fullPath);
 
-        $uploadLength = (int) $request->header('Upload-Length', 0);
+        // Fix #5834/PR #5876: reject negative Upload-Length to prevent inconsistent cache
+        $rawLength = $request->header('Upload-Length');
+        if ($rawLength === null || $rawLength === '') {
+            return response('Upload-Length header required', 400);
+        }
+        $uploadLength = (int) $rawLength;
         if ($uploadLength <= 0) {
-            return response('Upload-Length required', 400);
+            return response('Upload-Length must be a positive integer', 400);
+        }
+        // Sanity cap: 10GB max per upload
+        $maxUpload = (int) config('filebrowser.max_upload_size', 10 * 1024 * 1024 * 1024);
+        if ($uploadLength > $maxUpload) {
+            return response('Upload-Length exceeds maximum allowed size', 413);
         }
 
         $dirMode = config('filebrowser.dir_mode', 0755);
@@ -1075,6 +1142,24 @@ class FileBrowserController extends Controller
         return $resolvedParent . '/' . basename($full);
     }
 
+    /**
+     * PR #5658: Check disk quota before allowing upload.
+     * Quota resolver can be set in config('filebrowser.quota_resolver').
+     */
+    protected function checkQuota(string $root, int $uploadSize = 0): void
+    {
+        $quotaResolver = config('filebrowser.quota_resolver');
+        if (!is_callable($quotaResolver)) return;
+
+        $quota = $quotaResolver(auth()->user(), $root); // Returns max bytes or 0 for unlimited
+        if ($quota <= 0) return;
+
+        $used = (int) trim(shell_exec('du -sb ' . escapeshellarg($root) . ' 2>/dev/null | cut -f1') ?: '0');
+        if (($used + $uploadSize) > $quota) {
+            abort(507, 'Disk quota exceeded. Used: ' . round($used / 1024 / 1024) . 'MB / ' . round($quota / 1024 / 1024) . 'MB');
+        }
+    }
+
     protected function relativePath(string $resolved, string $root): string
     {
         $resolvedRoot = realpath($root);
@@ -1176,15 +1261,28 @@ class FileBrowserController extends Controller
         @rmdir($dir);
     }
 
+    /**
+     * Copy directory recursively.
+     * PR #5873: deep conflict resolution — merge into existing dirs,
+     * only overwrite files that conflict (preserve non-conflicting).
+     */
     protected function copyDir(string $src, string $dst): void
     {
         $dirMode = config('filebrowser.dir_mode', 0755);
-        @mkdir($dst, $dirMode, true);
+        if (!is_dir($dst)) {
+            @mkdir($dst, $dirMode, true);
+        }
         foreach (scandir($src) ?: [] as $item) {
             if ($item === '.' || $item === '..') continue;
             $s = $src . '/' . $item;
             $d = $dst . '/' . $item;
-            is_dir($s) ? $this->copyDir($s, $d) : @copy($s, $d);
+            if (is_dir($s)) {
+                // Recursively merge into existing subdirectory
+                $this->copyDir($s, $d);
+            } else {
+                // Copy file (overwrites if exists)
+                @copy($s, $d);
+            }
         }
     }
 

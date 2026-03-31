@@ -91,4 +91,35 @@ return [
     */
     'dir_mode' => 0755,
     'file_mode' => 0644,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Quota Resolver (PR #5658)
+    |--------------------------------------------------------------------------
+    | Callable returning max bytes for a user. Return 0 for unlimited.
+    | Example: fn($user, $root) => 500 * 1024 * 1024
+    */
+    'quota_resolver' => null,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Max Content Size for Text Editor (Fix #5294)
+    |--------------------------------------------------------------------------
+    | Maximum file size (bytes) to load in editor. Prevents memory exhaustion.
+    */
+    'max_content_size' => 5 * 1024 * 1024,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Event Hooks
+    |--------------------------------------------------------------------------
+    | Shell commands on file events. Env vars: FILE, SCOPE, TRIGGER, USERNAME, DESTINATION
+    */
+    'hooks' => [
+        // 'upload' => [],
+        // 'save' => [],
+        // 'delete' => [],
+        // 'copy' => [],
+        // 'rename' => [],
+    ],
 ];
