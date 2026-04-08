@@ -198,6 +198,11 @@ class FileBrowserController extends Controller
         }
 
         // File — include content for text files
+        // Fix #5891: check download permission before returning binary file content
+        if ($info['type'] !== 'text') {
+            $this->checkPerm('download');
+        }
+
         // Fix #5294: cap at 5MB to prevent memory exhaustion DoS
         $maxContentSize = min(5 * 1024 * 1024, (int) config('filebrowser.max_content_size', 5 * 1024 * 1024));
         if ($info['type'] === 'text' && $info['size'] < $maxContentSize) {
@@ -463,11 +468,21 @@ class FileBrowserController extends Controller
         if (is_file($resolved)) {
             $disposition = $inline ? 'inline' : 'attachment';
             $filename = basename($resolved);
-            return response()->download($resolved, $filename, [
+            $headers = [
                 'Content-Disposition' => $disposition . '; filename*=utf-8\'\'' . rawurlencode($filename),
                 'Content-Security-Policy' => "script-src 'none';",
                 'Cache-Control' => 'private',
-            ]);
+            ];
+
+            // Fix: disable scripted content in potentially dangerous file types for inline preview
+            if ($inline) {
+                $ext = strtolower(pathinfo($resolved, PATHINFO_EXTENSION));
+                if (in_array($ext, ['epub', 'svg', 'html', 'htm', 'xhtml'])) {
+                    $headers['X-Content-Type-Options'] = 'nosniff';
+                }
+            }
+
+            return response()->download($resolved, $filename, $headers);
         }
 
         // Directory — create archive
@@ -867,6 +882,12 @@ class FileBrowserController extends Controller
             }
         }
 
+        // Fix #5888: verify share owner still has download permission
+        $ownerPerms = config('filebrowser.permissions', []);
+        if (!empty($ownerPerms) && isset($ownerPerms['download']) && $ownerPerms['download'] === false) {
+            return response('share owner no longer has download permission', 403);
+        }
+
         $root = $this->getRootPathForUser($share->user_id);
         if (!$root) {
             return response('not found', 404);
@@ -952,6 +973,9 @@ class FileBrowserController extends Controller
     public function tusPost(Request $request, string $path = '/'): Response
     {
         $this->checkPerm('create');
+
+        // Fix #5848: normalize double slashes in path
+        $path = preg_replace('#/+#', '/', $path);
 
         $root = $this->getRootPath($request);
         $fullPath = $this->buildPath($root, $path);
@@ -1121,6 +1145,12 @@ class FileBrowserController extends Controller
     protected function resolve(string $root, string $path): ?string
     {
         $path = '/' . ltrim($path, '/');
+
+        // Fix #5889: reject paths containing '..' to enforce directory boundary
+        if (preg_match('/\.\./', $path)) {
+            return null;
+        }
+
         $full = $root . $path;
         if (!file_exists($full)) return null;
         $resolved = realpath($full);
