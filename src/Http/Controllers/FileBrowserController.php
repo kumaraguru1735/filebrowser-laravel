@@ -485,20 +485,11 @@ class FileBrowserController extends Controller
             if (preg_match('/\.\.\//', $destination) || strpos($destination, '..') !== false) {
                 return response('invalid destination', 403);
             }
+            // Create destination if it doesn't exist; otherwise extract directly into
+            // the user-chosen folder. (No auto-renaming — user explicitly picked it.)
             if (!is_dir($destDir)) {
                 if (!@mkdir($destDir, $dirMode, true)) {
                     return response('failed to create destination', 500);
-                }
-            } elseif (!$override) {
-                // Conflict: append (1) (2) suffix unless override is set
-                $base = $destDir;
-                $i = 1;
-                while (is_dir($destDir) && count(scandir($destDir)) > 2) {
-                    $destDir = $base . ' (' . $i . ')';
-                    $i++;
-                }
-                if (!is_dir($destDir)) {
-                    @mkdir($destDir, $dirMode, true);
                 }
             }
         } else {
