@@ -467,22 +467,55 @@ class FileBrowserController extends Controller
             return response('archive not found', 404);
         }
 
+        // User-chosen destination (set by the frontend's destination picker)
+        $destination = urldecode($request->query('destination', ''));
+        $override = $request->boolean('override');
+
         $ext = strtolower(pathinfo($resolved, PATHINFO_EXTENSION));
         $basename = pathinfo($resolved, PATHINFO_FILENAME);
-        $dir = dirname($resolved);
-
-        // Determine extraction destination — folder named after archive
-        $destDir = $dir . '/' . $basename;
-        $i = 1;
-        while (is_dir($destDir)) {
-            $destDir = $dir . '/' . $basename . ' (' . $i . ')';
-            $i++;
-        }
-
         $dirMode = config('filebrowser.dir_mode', 0755);
-        if (!@mkdir($destDir, $dirMode, true)) {
-            return response('failed to create extraction directory', 500);
+
+        if (!empty($destination)) {
+            // Resolve user-chosen destination relative to root
+            $destDir = $this->buildPath($root, rtrim($destination, '/') ?: '/');
+            if (!$destDir) {
+                return response('invalid destination', 403);
+            }
+            // Reject path traversal
+            if (preg_match('/\.\.\//', $destination) || strpos($destination, '..') !== false) {
+                return response('invalid destination', 403);
+            }
+            if (!is_dir($destDir)) {
+                if (!@mkdir($destDir, $dirMode, true)) {
+                    return response('failed to create destination', 500);
+                }
+            } elseif (!$override) {
+                // Conflict: append (1) (2) suffix unless override is set
+                $base = $destDir;
+                $i = 1;
+                while (is_dir($destDir) && count(scandir($destDir)) > 2) {
+                    $destDir = $base . ' (' . $i . ')';
+                    $i++;
+                }
+                if (!is_dir($destDir)) {
+                    @mkdir($destDir, $dirMode, true);
+                }
+            }
+        } else {
+            // No destination — extract to folder named after archive
+            $dir = dirname($resolved);
+            $destDir = $dir . '/' . $basename;
+            $i = 1;
+            while (is_dir($destDir)) {
+                $destDir = $dir . '/' . $basename . ' (' . $i . ')';
+                $i++;
+            }
+            if (!@mkdir($destDir, $dirMode, true)) {
+                return response('failed to create extraction directory', 500);
+            }
         }
+
+        $createdNew = empty($destination);
 
         try {
             if ($ext === 'zip') {
@@ -490,18 +523,19 @@ class FileBrowserController extends Controller
             } elseif (in_array($ext, ['tar', 'tgz', 'gz', 'bz2', 'xz'])) {
                 $this->extractTar($resolved, $destDir, $root);
             } else {
-                @rmdir($destDir);
+                if ($createdNew) @rmdir($destDir);
                 return response('unsupported archive format: ' . $ext, 400);
             }
         } catch (\Throwable $e) {
-            // Cleanup on failure
-            $this->removeDir($destDir);
+            // Cleanup only if we created the folder
+            if ($createdNew) $this->removeDir($destDir);
             return response('extraction failed: ' . $e->getMessage(), 500);
         }
 
-        // Set ownership to match parent directory
-        $owner = @fileowner($dir);
-        $group = @filegroup($dir);
+        // Set ownership to match destination's parent
+        $parentDir = dirname($destDir);
+        $owner = @fileowner($parentDir);
+        $group = @filegroup($parentDir);
         if ($owner !== false && $group !== false) {
             @exec('chown -R ' . escapeshellarg($owner . ':' . $group) . ' ' . escapeshellarg($destDir));
         }

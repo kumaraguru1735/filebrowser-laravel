@@ -69,9 +69,20 @@ export async function remove(url: string) {
   return resourceAction(url, "DELETE");
 }
 
-export async function extract(url: string) {
+export async function extract(
+  url: string,
+  destination = "",
+  overwrite = false
+) {
   url = removePrefix(url);
-  const res = await fetchURL(`/api/extract${url}`, { method: "POST" });
+  const params = new URLSearchParams();
+  if (destination) params.set("destination", removePrefix(destination));
+  if (overwrite) params.set("override", "true");
+  const qs = params.toString();
+  const res = await fetchURL(
+    `/api/extract${url}${qs ? "?" + qs : ""}`,
+    { method: "POST" }
+  );
   if (!res.ok) {
     const text = await res.text();
     throw new StatusError(text || "extract failed", res.status);
