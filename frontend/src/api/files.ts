@@ -69,6 +69,16 @@ export async function remove(url: string) {
   return resourceAction(url, "DELETE");
 }
 
+export async function extract(url: string) {
+  url = removePrefix(url);
+  const res = await fetchURL(`/api/extract${url}`, { method: "POST" });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new StatusError(text || "extract failed", res.status);
+  }
+  return res.json();
+}
+
 export async function put(url: string, content = "") {
   return resourceAction(url, "PUT", content);
 }

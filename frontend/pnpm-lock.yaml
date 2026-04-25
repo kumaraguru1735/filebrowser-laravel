@@ -41,6 +41,9 @@ importers:
       jwt-decode:
         specifier: ^4.0.0
         version: 4.0.0
+      katex:
+        specifier: ^0.16.44
+        version: 0.16.45
       lodash-es:
         specifier: ^4.17.21
         version: 4.17.23
@@ -49,7 +52,7 @@ importers:
         version: 17.0.5
       marked-katex-extension:
         specifier: ^5.1.6
-        version: 5.1.7(katex@0.16.28)(marked@17.0.5)
+        version: 5.1.7(katex@0.16.45)(marked@17.0.5)
       material-icons:
         specifier: ^1.13.14
         version: 1.13.14
@@ -2299,8 +2302,8 @@ packages:
     resolution: {integrity: sha512-+KJGIyHgkGuIq3IEBNftfhW/LfWhXUIY6OmyVWjliu5KH1y0fw7VQ8YndE2O4qZdMSd9SqbnC8GOcZEy0Om7sA==}
     engines: {node: '>=18'}
 
-  katex@0.16.28:
-    resolution: {integrity: sha512-YHzO7721WbmAL6Ov1uzN/l5mY5WWWhJBSW+jq4tkfZfsxmo1hu6frS0EOswvjBUnWE6NtjEs48SFn5CQESRLZg==}
+  katex@0.16.45:
+    resolution: {integrity: sha512-pQpZbdBu7wCTmQUh7ufPmLr0pFoObnGUoL/yhtwJDgmmQpbkg/0HSVti25Fu4rmd1oCR6NGWe9vqTWuWv3GcNA==}
     hasBin: true
 
   keyv@4.5.4:
@@ -5271,7 +5274,7 @@ snapshots:
 
   jwt-decode@4.0.0: {}
 
-  katex@0.16.28:
+  katex@0.16.45:
     dependencies:
       commander: 8.3.0
 
@@ -5405,9 +5408,9 @@ snapshots:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  marked-katex-extension@5.1.7(katex@0.16.28)(marked@17.0.5):
+  marked-katex-extension@5.1.7(katex@0.16.45)(marked@17.0.5):
     dependencies:
-      katex: 0.16.28
+      katex: 0.16.45
       marked: 17.0.5
 
   marked@17.0.5: {}

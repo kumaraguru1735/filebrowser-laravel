@@ -45,6 +45,13 @@
             :label="t('buttons.delete')"
             show="delete"
           />
+          <action
+            v-if="headerButtons.extract"
+            id="extract-button"
+            icon="unarchive"
+            label="Extract"
+            show="extract"
+          />
         </template>
 
         <action
@@ -120,6 +127,12 @@
         icon="delete"
         :label="t('buttons.delete')"
         show="delete"
+      />
+      <action
+        v-if="headerButtons.extract"
+        icon="unarchive"
+        label="Extract"
+        show="extract"
       />
     </div>
 
@@ -302,6 +315,12 @@
             @action="download"
             :counter="fileStore.selectedCount"
           />
+          <action
+            v-if="headerButtons.extract"
+            icon="unarchive"
+            label="Extract"
+            show="extract"
+          />
           <action icon="info" :label="t('buttons.info')" show="info" />
         </context-menu>
 
@@ -473,7 +492,18 @@ const viewIcon = computed(() => {
     : icons[authStore.user.viewMode];
 });
 
+const isArchiveFile = (name: string): boolean => {
+  if (!name) return false;
+  const lower = name.toLowerCase();
+  return /\.(zip|tar|tar\.gz|tgz|tar\.bz2|tar\.xz)$/i.test(lower);
+};
+
 const headerButtons = computed(() => {
+  const sel = fileStore.selectedCount === 1
+    ? fileStore.req?.items?.[fileStore.selected[0]]
+    : null;
+  const canExtract = sel && !sel.isDir && isArchiveFile(sel.name);
+
   return {
     upload: authStore.user?.perm.create,
     download: authStore.user?.perm.download,
@@ -486,6 +516,7 @@ const headerButtons = computed(() => {
       authStore.user?.perm.download,
     move: fileStore.selectedCount > 0 && authStore.user?.perm.rename,
     copy: fileStore.selectedCount > 0 && authStore.user?.perm.create,
+    extract: canExtract && authStore.user?.perm.create,
   };
 });
 
