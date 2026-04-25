@@ -1,3 +1,26 @@
+@php
+    // Dynamically locate the latest built assets (immune to vite hash changes)
+    $distAssets = base_path('vendor/kumaraguru/filebrowser-laravel/resources/dist/assets');
+    $assetFiles = is_dir($distAssets) ? scandir($distAssets) : [];
+
+    $findLatest = function (string $prefix, string $ext) use ($assetFiles) {
+        $matches = [];
+        foreach ($assetFiles as $f) {
+            if (preg_match('/^' . preg_quote($prefix, '/') . '-[A-Za-z0-9_-]+\.' . $ext . '$/', $f)) {
+                $matches[] = $f;
+            }
+        }
+        return $matches[0] ?? null;
+    };
+
+    $indexJs    = $findLatest('index', 'js') ?: 'index.js';
+    $indexCss   = $findLatest('index', 'css') ?: 'index.css';
+    $legacyJs   = $findLatest('index-legacy', 'js') ?: null;
+    $polyfillJs = $findLatest('polyfills-legacy', 'js') ?: null;
+    $rolldownJs = $findLatest('rolldown-runtime', 'js') ?: null;
+    $dayjsJs    = $findLatest('dayjs', 'js') ?: null;
+    $i18nJs     = $findLatest('i18n', 'js') ?: null;
+@endphp
 <!doctype html>
 <html lang="en">
 <head>
@@ -69,11 +92,11 @@
       @keyframes sk-bouncedelay{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
     </style>
 
-    <script type="module" crossorigin src="{{ $staticURL }}/assets/index-DPz__Ij4.js"></script>
-    <link rel="modulepreload" crossorigin href="{{ $staticURL }}/assets/rolldown-runtime-Bhmf7a9N.js">
-    <link rel="modulepreload" crossorigin href="{{ $staticURL }}/assets/dayjs-DtVdYEdL.js">
-    <link rel="modulepreload" crossorigin href="{{ $staticURL }}/assets/i18n-B8mDLQeR.js">
-    <link rel="stylesheet" crossorigin href="{{ $staticURL }}/assets/index-BtYCM-IR.css">
+    <script type="module" crossorigin src="{{ $staticURL }}/assets/{{ $indexJs }}"></script>
+    @if($rolldownJs)<link rel="modulepreload" crossorigin href="{{ $staticURL }}/assets/{{ $rolldownJs }}">@endif
+    @if($dayjsJs)<link rel="modulepreload" crossorigin href="{{ $staticURL }}/assets/{{ $dayjsJs }}">@endif
+    @if($i18nJs)<link rel="modulepreload" crossorigin href="{{ $staticURL }}/assets/{{ $i18nJs }}">@endif
+    <link rel="stylesheet" crossorigin href="{{ $staticURL }}/assets/{{ $indexCss }}">
 </head>
 <body>
     <div id="app"></div>
@@ -84,7 +107,11 @@
         <div class="bounce3"></div>
       </div>
     </div>
-    <script nomodule crossorigin id="vite-legacy-polyfill" src="{{ $staticURL }}/assets/polyfills-legacy-D_7TL9qj.js"></script>
-    <script nomodule crossorigin id="vite-legacy-entry" data-src="{{ $staticURL }}/assets/index-legacy-BCZbfHgm.js">System.import(document.getElementById('vite-legacy-entry').getAttribute('data-src'))</script>
+    @if($polyfillJs)
+    <script nomodule crossorigin id="vite-legacy-polyfill" src="{{ $staticURL }}/assets/{{ $polyfillJs }}"></script>
+    @endif
+    @if($legacyJs)
+    <script nomodule crossorigin id="vite-legacy-entry" data-src="{{ $staticURL }}/assets/{{ $legacyJs }}">System.import(document.getElementById('vite-legacy-entry').getAttribute('data-src'))</script>
+    @endif
 </body>
 </html>
