@@ -36,6 +36,14 @@ Route::middleware($middleware)->prefix($prefix)->group(function () {
         // Extract archive (zip/tar/tar.gz/tar.bz2)
         Route::post('extract{path?}', [FileBrowserController::class, 'extract'])->where('path', '.*');
 
+        // Settings (stub — returns defaults)
+        Route::get('settings', [FileBrowserController::class, 'settingsGet']);
+        Route::put('settings', [FileBrowserController::class, 'settingsPut']);
+
+        // Users (stub — single virtual user from Laravel auth)
+        Route::get('users', [FileBrowserController::class, 'usersList']);
+        Route::get('users/{id}', [FileBrowserController::class, 'usersGet']);
+
         // Download / Raw
         Route::get('raw{path?}', [FileBrowserController::class, 'raw'])->where('path', '.*');
 

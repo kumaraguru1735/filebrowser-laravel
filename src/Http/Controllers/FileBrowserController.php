@@ -378,6 +378,11 @@ class FileBrowserController extends Controller
         $path = rtrim($path, '/') ?: '/';
         $destination = rtrim($destination, '/') ?: '/';
 
+        // Handle chmod action (separate flow — doesn't need destination)
+        if ($action === 'chmod') {
+            return $this->handleChmod($request, $root, $path);
+        }
+
         // Permission check based on action
         if ($action === 'copy') {
             $this->checkPerm('create');
@@ -1474,5 +1479,167 @@ class FileBrowserController extends Controller
                 $this->searchDir($fullPath, $root, $pattern, $conditions, $caseSensitive, $results, $depth + 1, $limit);
             }
         }
+    }
+
+    // =========================================================================
+    // CHMOD — change file permissions (recursive optional)
+    // =========================================================================
+
+    private function handleChmod(Request $request, string $root, string $path): Response
+    {
+        $this->checkPerm('modify');
+
+        $resolved = $this->resolve($root, $path);
+        if (!$resolved) {
+            return response('not found', 404);
+        }
+
+        // Permissions can come as octal string (e.g. "755") in body or query
+        $body = json_decode($request->getContent(), true) ?: [];
+        $permsStr = $body['permissions'] ?? $request->query('permissions', '');
+        $recursive = !empty($body['recursive']) || $request->boolean('recursive');
+
+        if (!preg_match('/^[0-7]{3,4}$/', $permsStr)) {
+            return response('invalid permissions (expected 3-4 octal digits)', 400);
+        }
+
+        $mode = octdec($permsStr);
+
+        if ($recursive && is_dir($resolved)) {
+            $this->chmodRecursive($resolved, $mode);
+        } else {
+            if (!@chmod($resolved, $mode)) {
+                return response('chmod failed', 500);
+            }
+        }
+
+        $this->fireHook('chmod', $resolved, $root);
+        return response('', 204);
+    }
+
+    private function chmodRecursive(string $dir, int $mode): void
+    {
+        @chmod($dir, $mode);
+        $items = @scandir($dir) ?: [];
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') continue;
+            $path = $dir . '/' . $item;
+            if (is_dir($path) && !is_link($path)) {
+                $this->chmodRecursive($path, $mode);
+            } else {
+                @chmod($path, $mode);
+            }
+        }
+    }
+
+    // =========================================================================
+    // SETTINGS — stub for frontend Settings page (returns sane defaults)
+    // =========================================================================
+
+    public function settingsGet(Request $request)
+    {
+        return response()->json([
+            'signup' => false,
+            'createUserDir' => false,
+            'hideLoginButton' => true,
+            'minimumPasswordLength' => 8,
+            'userHomeBasePath' => '',
+            'authMethod' => 'json',
+            'rules' => [],
+            'shell' => [],
+            'commands' => (object)[],
+            'tus' => [
+                'chunkSize' => 10 * 1024 * 1024,
+                'retryCount' => 5,
+            ],
+            'branding' => [
+                'name' => config('app.name', 'VPanel') . ' File Manager',
+                'disableExternal' => true,
+                'disableUsedPercentage' => false,
+                'files' => '',
+                'theme' => 'light',
+                'color' => '#673ab7',
+            ],
+            'defaults' => [
+                'scope' => '/',
+                'locale' => 'en',
+                'viewMode' => 'list',
+                'singleClick' => false,
+                'redirectAfterCopyMove' => false,
+                'sorting' => ['by' => 'name', 'asc' => true],
+                'perm' => [
+                    'admin' => false,
+                    'execute' => false,
+                    'create' => true,
+                    'rename' => true,
+                    'modify' => true,
+                    'delete' => true,
+                    'share' => true,
+                    'download' => true,
+                ],
+                'commands' => [],
+                'hideDotfiles' => false,
+                'dateFormat' => false,
+                'aceEditorTheme' => 'github',
+            ],
+        ]);
+    }
+
+    public function settingsPut(Request $request)
+    {
+        // VPanel manages settings server-side; client-side updates ignored
+        return response('', 204);
+    }
+
+    // =========================================================================
+    // USERS — stub for frontend (single virtual user = current Laravel user)
+    // =========================================================================
+
+    public function usersList(Request $request)
+    {
+        $user = auth()->user();
+        if (!$user) return response('unauthorized', 401);
+
+        return response()->json([$this->virtualUser($user, $request)]);
+    }
+
+    public function usersGet(Request $request, string $id)
+    {
+        $user = auth()->user();
+        if (!$user) return response('unauthorized', 401);
+
+        return response()->json($this->virtualUser($user, $request));
+    }
+
+    private function virtualUser($user, Request $request): array
+    {
+        $root = $this->getRootPath($request);
+        return [
+            'id' => $user->id,
+            'username' => $user->email ?? $user->name ?? 'user',
+            'password' => '',
+            'scope' => $root,
+            'locale' => 'en',
+            'lockPassword' => true,
+            'viewMode' => 'list',
+            'singleClick' => false,
+            'perm' => [
+                'admin' => false,
+                'execute' => false,
+                'create' => true,
+                'rename' => true,
+                'modify' => true,
+                'delete' => true,
+                'share' => true,
+                'download' => true,
+            ],
+            'commands' => [],
+            'sorting' => ['by' => 'name', 'asc' => true],
+            'rules' => [],
+            'hideDotfiles' => false,
+            'dateFormat' => false,
+            'redirectAfterCopyMove' => false,
+            'aceEditorTheme' => 'github',
+        ];
     }
 }
