@@ -33,6 +33,9 @@ Route::middleware($middleware)->prefix($prefix)->group(function () {
         Route::delete('resources{path?}', [FileBrowserController::class, 'resourceDelete'])->where('path', '.*');
         Route::patch('resources{path?}', [FileBrowserController::class, 'resourcePatch'])->where('path', '.*');
 
+        // Extract archive (zip/tar/tar.gz/tar.bz2)
+        Route::post('extract{path?}', [FileBrowserController::class, 'extract'])->where('path', '.*');
+
         // Download / Raw
         Route::get('raw{path?}', [FileBrowserController::class, 'raw'])->where('path', '.*');
 

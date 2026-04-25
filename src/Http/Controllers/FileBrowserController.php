@@ -448,6 +448,129 @@ class FileBrowserController extends Controller
     }
 
     // =========================================================================
+    // EXTRACT — Unpack zip/tar/tar.gz/tar.bz2 archives in place
+    // =========================================================================
+
+    public function extract(Request $request, string $path = '/'): Response
+    {
+        $this->checkPerm('create');
+        $root = $this->getRootPath($request);
+        $path = rtrim($path, '/') ?: '/';
+        $resolved = $this->resolve($root, $path);
+
+        if (!$resolved || !is_file($resolved)) {
+            return response('archive not found', 404);
+        }
+
+        $ext = strtolower(pathinfo($resolved, PATHINFO_EXTENSION));
+        $basename = pathinfo($resolved, PATHINFO_FILENAME);
+        $dir = dirname($resolved);
+
+        // Determine extraction destination — folder named after archive
+        $destDir = $dir . '/' . $basename;
+        $i = 1;
+        while (is_dir($destDir)) {
+            $destDir = $dir . '/' . $basename . ' (' . $i . ')';
+            $i++;
+        }
+
+        $dirMode = config('filebrowser.dir_mode', 0755);
+        if (!@mkdir($destDir, $dirMode, true)) {
+            return response('failed to create extraction directory', 500);
+        }
+
+        try {
+            if ($ext === 'zip') {
+                $this->extractZip($resolved, $destDir, $root);
+            } elseif (in_array($ext, ['tar', 'tgz', 'gz', 'bz2', 'xz'])) {
+                $this->extractTar($resolved, $destDir, $root);
+            } else {
+                @rmdir($destDir);
+                return response('unsupported archive format: ' . $ext, 400);
+            }
+        } catch (\Throwable $e) {
+            // Cleanup on failure
+            $this->removeDir($destDir);
+            return response('extraction failed: ' . $e->getMessage(), 500);
+        }
+
+        // Set ownership to match parent directory
+        $owner = @fileowner($dir);
+        $group = @filegroup($dir);
+        if ($owner !== false && $group !== false) {
+            @exec('chown -R ' . escapeshellarg($owner . ':' . $group) . ' ' . escapeshellarg($destDir));
+        }
+
+        $this->fireHook('extract', $resolved, $root, $destDir);
+
+        return response()->json([
+            'success' => true,
+            'destination' => str_replace($root, '', $destDir),
+        ]);
+    }
+
+    private function extractZip(string $archive, string $destDir, string $root): void
+    {
+        $zip = new \ZipArchive();
+        if ($zip->open($archive) !== true) {
+            throw new \RuntimeException('cannot open zip');
+        }
+
+        // Pre-validate entries against path traversal
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $name = $zip->getNameIndex($i);
+            if (strpos($name, '..') !== false || str_starts_with($name, '/')) {
+                $zip->close();
+                throw new \RuntimeException('archive contains unsafe paths');
+            }
+        }
+
+        if (!$zip->extractTo($destDir)) {
+            $zip->close();
+            throw new \RuntimeException('extraction failed');
+        }
+        $zip->close();
+    }
+
+    private function extractTar(string $archive, string $destDir, string $root): void
+    {
+        // Pre-validate entries
+        $listOutput = [];
+        $listExit = 0;
+        @exec('tar -tf ' . escapeshellarg($archive) . ' 2>&1', $listOutput, $listExit);
+        if ($listExit !== 0) {
+            throw new \RuntimeException('cannot read archive');
+        }
+        foreach ($listOutput as $entry) {
+            if (strpos($entry, '..') !== false || str_starts_with($entry, '/')) {
+                throw new \RuntimeException('archive contains unsafe paths');
+            }
+        }
+
+        // Extract with safety flags
+        $extractOutput = [];
+        $extractExit = 0;
+        @exec('tar -xf ' . escapeshellarg($archive)
+            . ' -C ' . escapeshellarg($destDir)
+            . ' --no-same-owner --no-same-permissions 2>&1', $extractOutput, $extractExit);
+
+        if ($extractExit !== 0) {
+            throw new \RuntimeException('extraction failed: ' . implode(' ', $extractOutput));
+        }
+    }
+
+    private function removeDir(string $dir): void
+    {
+        if (!is_dir($dir)) return;
+        $files = array_diff(scandir($dir), ['.', '..']);
+        foreach ($files as $file) {
+            $path = $dir . '/' . $file;
+            is_dir($path) ? $this->removeDir($path) : @unlink($path);
+        }
+        @rmdir($dir);
+    }
+
+    // =========================================================================
     // RAW — download file or directory archive
     // Mirrors: Go raw.go rawHandler
     // =========================================================================
