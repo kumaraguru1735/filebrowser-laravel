@@ -456,7 +456,7 @@ class FileBrowserController extends Controller
     // EXTRACT — Unpack zip/tar/tar.gz/tar.bz2 archives in place
     // =========================================================================
 
-    public function extract(Request $request, string $path = '/'): Response
+    public function extract(Request $request, string $path = '/'): Response|JsonResponse
     {
         $this->checkPerm('create');
         $root = $this->getRootPath($request);
