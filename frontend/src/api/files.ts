@@ -90,6 +90,39 @@ export async function extract(
   return res.json();
 }
 
+// Compress one or more files/dirs into an archive on the server's
+// filesystem. `destDir` is the directory the archive lands in;
+// `paths` is the list of selected entries (resolved relative to root
+// by the backend). `format` is one of zip / tar / targz / tarbz2 /
+// tarxz. `name` is optional — backend auto-names if empty.
+export async function compress(
+  destDir: string,
+  paths: string[],
+  format = "zip",
+  name = ""
+) {
+  destDir = removePrefix(destDir);
+  const res = await fetchURL(
+    `/api/compress${destDir}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        paths: paths.map((p) => removePrefix(p)),
+        format,
+        name,
+      }),
+    }
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    let msg = "compress failed";
+    try { msg = JSON.parse(text).message || msg; } catch (_) { msg = text || msg; }
+    throw new StatusError(msg, res.status);
+  }
+  return res.json();
+}
+
 export async function put(url: string, content = "") {
   return resourceAction(url, "PUT", content);
 }
@@ -261,5 +294,55 @@ export async function usage(url: string, signal: AbortSignal) {
       throw new StatusError("000 No connection", 0, true);
     }
     throw e;
+  }
+}
+
+// =============================================================
+// TRASH BIN
+// =============================================================
+//
+// Soft-delete: the standard remove() above lands files in
+// <root>/.trash/<entry-id>/. These functions list, restore,
+// and permanently delete them.
+// =============================================================
+
+export async function trashList() {
+  const res = await fetchURL(`/api/trash`, {});
+  if (!res.ok) {
+    throw new StatusError("trash list failed", res.status);
+  }
+  return res.json();
+}
+
+export async function trashRestore(entryId: string) {
+  const res = await fetchURL(
+    `/api/trash/${encodeURIComponent(entryId)}/restore`,
+    { method: "POST" }
+  );
+  if (!res.ok) {
+    let msg = "restore failed";
+    try {
+      const j = await res.json();
+      msg = j.message || msg;
+    } catch (_) {}
+    throw new StatusError(msg, res.status);
+  }
+  return res.json();
+}
+
+export async function trashDelete(entryId: string) {
+  const res = await fetchURL(
+    `/api/trash/${encodeURIComponent(entryId)}`,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    throw new StatusError("delete failed", res.status);
+  }
+}
+
+export async function trashEmpty() {
+  const res = await fetchURL(`/api/trash`, { method: "DELETE" });
+  if (!res.ok) {
+    throw new StatusError("empty trash failed", res.status);
   }
 }

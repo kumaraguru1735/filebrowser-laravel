@@ -41,5 +41,12 @@ class FileBrowserServiceProvider extends ServiceProvider
 
         // Load routes
         $this->loadRoutesFrom(__DIR__ . '/routes/web.php');
+
+        // Register console commands when running in CLI context.
+        if ($this->app->runningInConsole()) {
+            $this->commands([
+                Console\PurgeTrashCommand::class,
+            ]);
+        }
     }
 }

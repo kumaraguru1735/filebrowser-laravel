@@ -36,6 +36,17 @@ Route::middleware($middleware)->prefix($prefix)->group(function () {
         // Extract archive (zip/tar/tar.gz/tar.bz2)
         Route::post('extract{path?}', [FileBrowserController::class, 'extract'])->where('path', '.*');
 
+        // Compress files/dirs into an archive on the customer's filesystem.
+        // The path prefix is the destination directory; selected paths
+        // come from the JSON body (`paths`, `format`, optional `name`).
+        Route::post('compress{path?}', [FileBrowserController::class, 'compress'])->where('path', '.*');
+
+        // Trash bin — soft-delete + restore.
+        Route::get('trash',                         [FileBrowserController::class, 'trashList']);
+        Route::post('trash/{entry}/restore',        [FileBrowserController::class, 'trashRestore']);
+        Route::delete('trash/{entry}',              [FileBrowserController::class, 'trashDelete']);
+        Route::delete('trash',                      [FileBrowserController::class, 'trashEmpty']);
+
         // Settings (stub — returns defaults)
         Route::get('settings', [FileBrowserController::class, 'settingsGet']);
         Route::put('settings', [FileBrowserController::class, 'settingsPut']);

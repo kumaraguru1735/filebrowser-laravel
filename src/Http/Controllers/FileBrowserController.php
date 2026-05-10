@@ -341,23 +341,229 @@ class FileBrowserController extends Controller
             return response('not found', 404);
         }
 
+        // Soft-delete by default — move into the per-user .trash dir
+        // with a sidecar .meta.json that records the original path.
+        // ?permanent=true bypasses for "Shift+Delete" style hard kill.
+        $permanent = $request->boolean('permanent')
+            || str_starts_with($resolved, $this->trashRoot($root));
+
         // Delete associated shares (like Go does)
         $relativePath = $this->relativePath($resolved, $root);
         FileBrowserShare::where('path', 'LIKE', $relativePath . '%')
             ->where('user_id', auth()->id())
             ->delete();
 
-        // Delete thumbnail cache
+        // Delete thumbnail cache regardless of soft / hard
         $this->clearThumbnailCache($resolved);
 
-        if (is_dir($resolved)) {
-            $this->deleteDir($resolved);
-        } else {
-            @unlink($resolved);
+        if ($permanent) {
+            if (is_dir($resolved)) {
+                $this->deleteDir($resolved);
+            } else {
+                @unlink($resolved);
+            }
+            $this->fireHook('delete', $resolved, $root);
+            return response('', 204);
         }
 
-        $this->fireHook('delete', $resolved, $root);
+        $r = $this->moveToTrash($resolved, $root);
+        if (!$r['ok']) {
+            return response($r['error'] ?? 'trash failed', 500);
+        }
+        $this->fireHook('trash', $resolved, $root);
+        return response('', 204);
+    }
 
+    // =========================================================================
+    // TRASH BIN
+    // =========================================================================
+    //
+    // Soft-delete lives under <root>/.trash/<entry-id>/
+    //   ├── <basename>          ← the actual file or directory
+    //   └── .meta.json          ← {original_path, original_name,
+    //                              deleted_at_unix, type, size}
+    //
+    // Each trashed item gets its own subdir to avoid name collisions
+    // when multiple files of the same name are deleted at different
+    // times. <entry-id> is `<unix_ts>-<random>` so listings sort
+    // newest-first naturally.
+    //
+    // The cron command `filebrowser:purge-trash` (registered in the
+    // package's service provider) hard-deletes entries older than
+    // config('filebrowser.trash_retention_days', 7).
+    // =========================================================================
+
+    /** Path of the .trash directory rooted at the user's home. */
+    protected function trashRoot(string $root): string
+    {
+        return rtrim($root, '/') . '/.trash';
+    }
+
+    /** Move $resolved into .trash and write the metadata sidecar. */
+    protected function moveToTrash(string $resolved, string $root): array
+    {
+        $trashRoot = $this->trashRoot($root);
+        if (!is_dir($trashRoot)) {
+            if (!@mkdir($trashRoot, 0750, true) && !is_dir($trashRoot)) {
+                return ['ok' => false, 'error' => 'cannot create .trash dir'];
+            }
+        }
+
+        $entryId  = date('Ymd-His') . '-' . bin2hex(random_bytes(3));
+        $entryDir = $trashRoot . '/' . $entryId;
+        if (!@mkdir($entryDir, 0750)) {
+            return ['ok' => false, 'error' => 'cannot create trash entry'];
+        }
+
+        $basename = basename($resolved);
+        $target   = $entryDir . '/' . $basename;
+        if (!@rename($resolved, $target)) {
+            // Cross-filesystem rename can fail with EXDEV. Fall back to
+            // copy + delete in that case.
+            if (is_dir($resolved)) {
+                $this->copyDir($resolved, $target);
+                $this->deleteDir($resolved);
+            } else {
+                @copy($resolved, $target);
+                @unlink($resolved);
+            }
+            if (!file_exists($target)) {
+                @rmdir($entryDir);
+                return ['ok' => false, 'error' => 'move failed'];
+            }
+        }
+
+        $meta = [
+            'original_path'   => $this->relativePath($resolved, $root),
+            'original_name'   => $basename,
+            'deleted_at_unix' => time(),
+            'type'            => is_dir($target) ? 'dir' : 'file',
+            'size'            => is_file($target) ? filesize($target) : null,
+            'deleted_by'      => auth()->id(),
+        ];
+        @file_put_contents($entryDir . '/.meta.json', json_encode($meta));
+
+        return ['ok' => true, 'entry_id' => $entryId];
+    }
+
+    /** GET /api/trash — list trashed entries newest-first. */
+    public function trashList(Request $request): JsonResponse
+    {
+        $root      = $this->getRootPath($request);
+        $trashRoot = $this->trashRoot($root);
+        if (!is_dir($trashRoot)) {
+            return $this->withCacheHeaders(response()->json(['items' => []]));
+        }
+
+        $items = [];
+        foreach (scandir($trashRoot) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') continue;
+            $entryDir = $trashRoot . '/' . $entry;
+            if (!is_dir($entryDir)) continue;
+
+            $metaPath = $entryDir . '/.meta.json';
+            $meta = is_file($metaPath) ? json_decode((string) @file_get_contents($metaPath), true) : null;
+            if (!is_array($meta)) {
+                // Orphan entry without sidecar — surface it anyway with
+                // best-effort metadata so the user can see + clean it.
+                $meta = [
+                    'original_path' => null,
+                    'original_name' => $entry,
+                    'deleted_at_unix' => filemtime($entryDir) ?: time(),
+                    'type' => 'unknown',
+                    'size' => null,
+                ];
+            }
+            $items[] = array_merge($meta, ['entry_id' => $entry]);
+        }
+
+        // Newest first.
+        usort($items, fn($a, $b) => ($b['deleted_at_unix'] ?? 0) <=> ($a['deleted_at_unix'] ?? 0));
+
+        return $this->withCacheHeaders(response()->json(['items' => $items]));
+    }
+
+    /** POST /api/trash/{entry}/restore — move back to original_path. */
+    public function trashRestore(Request $request, string $entry): JsonResponse
+    {
+        $root      = $this->getRootPath($request);
+        $entryDir  = $this->trashRoot($root) . '/' . basename($entry);
+        if (!is_dir($entryDir)) {
+            return response()->json(['message' => 'not found'], 404);
+        }
+
+        $metaPath = $entryDir . '/.meta.json';
+        if (!is_file($metaPath)) {
+            return response()->json(['message' => 'metadata missing — cannot restore'], 422);
+        }
+
+        $meta = json_decode((string) @file_get_contents($metaPath), true);
+        $originalPath = $meta['original_path'] ?? null;
+        $basename     = $meta['original_name'] ?? null;
+        if (!$originalPath || !$basename) {
+            return response()->json(['message' => 'invalid metadata'], 422);
+        }
+
+        // Resolve back to absolute path inside root.
+        $absoluteDest = $this->buildPath($root, $originalPath);
+        if (!$absoluteDest) {
+            return response()->json(['message' => 'destination outside root'], 422);
+        }
+
+        if (file_exists($absoluteDest)) {
+            return response()->json(['message' => 'destination already exists'], 409);
+        }
+
+        // Make sure the parent directory exists.
+        @mkdir(dirname($absoluteDest), 0750, true);
+
+        $source = $entryDir . '/' . $basename;
+        if (!file_exists($source)) {
+            return response()->json(['message' => 'trashed file missing'], 500);
+        }
+
+        if (!@rename($source, $absoluteDest)) {
+            // Cross-filesystem fallback
+            if (is_dir($source)) {
+                $this->copyDir($source, $absoluteDest);
+                $this->deleteDir($source);
+            } else {
+                @copy($source, $absoluteDest);
+                @unlink($source);
+            }
+        }
+
+        // Clean up the now-empty entry dir.
+        @unlink($metaPath);
+        @rmdir($entryDir);
+
+        return response()->json(['ok' => true, 'restored_to' => $originalPath]);
+    }
+
+    /** DELETE /api/trash/{entry} — permanent delete one entry. */
+    public function trashDelete(Request $request, string $entry): Response
+    {
+        $root     = $this->getRootPath($request);
+        $entryDir = $this->trashRoot($root) . '/' . basename($entry);
+        if (!is_dir($entryDir)) {
+            return response('not found', 404);
+        }
+        $this->deleteDir($entryDir);
+        return response('', 204);
+    }
+
+    /** DELETE /api/trash — empty the trash entirely. */
+    public function trashEmpty(Request $request): Response
+    {
+        $root      = $this->getRootPath($request);
+        $trashRoot = $this->trashRoot($root);
+        if (!is_dir($trashRoot)) return response('', 204);
+
+        foreach (scandir($trashRoot) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') continue;
+            $entryDir = $trashRoot . '/' . $entry;
+            is_dir($entryDir) ? $this->deleteDir($entryDir) : @unlink($entryDir);
+        }
         return response('', 204);
     }
 
@@ -707,6 +913,129 @@ class FileBrowserController extends Controller
 
         $name = basename($dir) . $ext;
         return response()->download($tmp, $name)->deleteFileAfterSend(true);
+    }
+
+    // =========================================================================
+    // COMPRESS — pack the selected files/dirs into an archive that is
+    // written to the user's filesystem (NOT streamed back like the
+    // download archives above). Caller picks the format (zip / targz /
+    // tarbz2 / tarxz) and the target archive name; the archive is
+    // dropped into the directory the request points at.
+    // =========================================================================
+
+    public function compress(Request $request, string $path = '/'): Response|JsonResponse
+    {
+        $this->checkPerm('modify');
+
+        $root = $this->getRootPath($request);
+        $destDir = $this->resolve($root, $path);
+        if (!$destDir || !is_dir($destDir)) {
+            return response()->json(['message' => 'destination directory not found'], 404);
+        }
+
+        $paths  = (array) $request->input('paths', []);
+        $format = (string) $request->input('format', 'zip');
+        $name   = trim((string) $request->input('name', ''));
+
+        if (empty($paths)) {
+            return response()->json(['message' => 'no paths provided'], 400);
+        }
+
+        $allowedFormats = ['zip', 'tar', 'targz', 'tarbz2', 'tarxz'];
+        if (!in_array($format, $allowedFormats, true)) {
+            return response()->json(['message' => 'unsupported format'], 400);
+        }
+
+        $resolvedPaths = [];
+        foreach ($paths as $p) {
+            $r = $this->resolve($root, $p);
+            if (!$r || !file_exists($r)) {
+                return response()->json(['message' => 'path not found: ' . $p], 404);
+            }
+            $resolvedPaths[] = $r;
+        }
+
+        if ($name === '') {
+            $extMap = ['zip' => '.zip', 'tar' => '.tar', 'targz' => '.tar.gz', 'tarbz2' => '.tar.bz2', 'tarxz' => '.tar.xz'];
+            $base = count($resolvedPaths) === 1 ? basename($resolvedPaths[0]) : 'archive';
+            $name = $base . $extMap[$format];
+        }
+
+        if (str_contains($name, '/') || str_contains($name, '\\') || $name === '.' || $name === '..') {
+            return response()->json(['message' => 'invalid archive name'], 400);
+        }
+
+        $target = $destDir . '/' . $name;
+        if (file_exists($target)) {
+            return response()->json(['message' => 'a file with that name already exists'], 409);
+        }
+
+        try {
+            if ($format === 'zip') {
+                $this->compressToZip($resolvedPaths, $target);
+            } else {
+                $this->compressToTar($resolvedPaths, $target, $format);
+            }
+        } catch (\Throwable $e) {
+            @unlink($target);
+            return response()->json(['message' => 'compression failed: ' . $e->getMessage()], 500);
+        }
+
+        if (!file_exists($target)) {
+            return response()->json(['message' => 'compression produced no output'], 500);
+        }
+
+        $this->fireHook('compress', $target, $root);
+
+        return response()->json([
+            'success' => true,
+            'archive' => trim(str_replace($root, '', $target), '/'),
+            'size'    => filesize($target),
+        ]);
+    }
+
+    private function compressToZip(array $resolvedPaths, string $target): void
+    {
+        $zip = new \ZipArchive();
+        if ($zip->open($target, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+            throw new \RuntimeException('cannot create zip');
+        }
+
+        foreach ($resolvedPaths as $p) {
+            if (is_dir($p)) {
+                $zip->addEmptyDir(basename($p));
+                $this->addDirToZip($zip, $p, basename($p));
+            } else {
+                $zip->addFile($p, basename($p));
+            }
+        }
+
+        $zip->close();
+    }
+
+    private function compressToTar(array $resolvedPaths, string $target, string $format): void
+    {
+        $args = [];
+        foreach ($resolvedPaths as $p) {
+            $args[] = '-C';
+            $args[] = escapeshellarg(dirname($p));
+            $args[] = escapeshellarg(basename($p));
+        }
+
+        $compFlag = match ($format) {
+            'tar'    => '',
+            'targz'  => 'z',
+            'tarbz2' => 'j',
+            'tarxz'  => 'J',
+            default  => 'z',
+        };
+
+        $cmd = 'tar -c' . $compFlag . 'f ' . escapeshellarg($target) . ' ' . implode(' ', $args) . ' 2>&1';
+        exec($cmd, $output, $exitCode);
+
+        if ($exitCode !== 0) {
+            throw new \RuntimeException('tar exited ' . $exitCode . ': ' . implode("\n", $output));
+        }
     }
 
     // =========================================================================

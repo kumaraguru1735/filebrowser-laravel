@@ -38,6 +38,22 @@
         </button>
       </div>
 
+      <!--
+        Trash — sits below New file like Hostinger. Just a folder
+        shortcut: clicking navigates to .trash inside the user's root,
+        so the regular file listing handles browse / restore (drag-back)
+        / permanent-delete (Shift+Delete or button).
+      -->
+      <button
+        class="action"
+        @click="toTrash"
+        aria-label="Trash"
+        title="Trash (.trash folder)"
+      >
+        <i class="material-icons">delete</i>
+        <span>Trash</span>
+      </button>
+
       <div v-if="user.perm.admin">
         <button
           class="action"
@@ -190,6 +206,14 @@ export default {
     },
     toRoot() {
       this.$router.push({ path: "/files" });
+      this.closeHovers();
+    },
+    toTrash() {
+      // Navigate to the .trash folder under the user's root. Same
+      // route as files browse, so the existing listing UI handles
+      // restore (move/copy back), permanent delete (Shift+Delete),
+      // and preview. Hostinger does the same.
+      this.$router.push({ path: "/files/.trash/" });
       this.closeHovers();
     },
     toAccountSettings() {

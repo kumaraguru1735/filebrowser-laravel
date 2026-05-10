@@ -122,4 +122,16 @@ return [
         // 'copy' => [],
         // 'rename' => [],
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Trash bin
+    |--------------------------------------------------------------------------
+    | Soft-deleted files live in <root>/.trash/ until the purge cron
+    | hard-deletes them. trash_retention_days controls the window.
+    | trash_scan_root is the fallback the purge command walks when
+    | the panel's HostingAccount table is unavailable.
+    */
+    'trash_retention_days' => 7,
+    'trash_scan_root'      => '/home',
 ];
