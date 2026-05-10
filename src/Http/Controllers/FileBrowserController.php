@@ -1203,10 +1203,31 @@ class FileBrowserController extends Controller
             return $this->withCacheHeaders(response()->json(['total' => 0, 'used' => 0]));
         }
 
-        $total = disk_total_space($resolvedRoot) ?: 0;
-        $used = (int) trim(shell_exec('du -sb ' . escapeshellarg($resolvedRoot) . ' 2>/dev/null | cut -f1') ?: '0');
+        // Allow the host application (e.g. a hosting panel) to override
+        // the disk numbers with plan-quota-aware values. Without the
+        // resolver, customers see their tiny dir usage against the
+        // whole server partition (144 GB) which is meaningless.
+        // The resolver gets the request + the resolved root and may
+        // return any subset of {total, used, total_inodes, used_inodes};
+        // missing keys fall back to filesystem-derived defaults.
+        $resolver = config('filebrowser.usage_resolver');
+        $override = is_callable($resolver) ? (array) $resolver($request, $resolvedRoot) : [];
 
-        return $this->withCacheHeaders(response()->json(['total' => $total, 'used' => $used]));
+        $total = $override['total']
+            ?? (disk_total_space($resolvedRoot) ?: 0);
+        $used = $override['used']
+            ?? (int) trim(shell_exec('du -sb ' . escapeshellarg($resolvedRoot) . ' 2>/dev/null | cut -f1') ?: '0');
+
+        $payload = ['total' => $total, 'used' => $used];
+
+        if (isset($override['total_inodes'])) {
+            $payload['total_inodes'] = (int) $override['total_inodes'];
+        }
+        if (isset($override['used_inodes'])) {
+            $payload['used_inodes'] = (int) $override['used_inodes'];
+        }
+
+        return $this->withCacheHeaders(response()->json($payload));
     }
 
     // =========================================================================
