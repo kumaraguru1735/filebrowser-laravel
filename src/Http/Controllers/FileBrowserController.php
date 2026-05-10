@@ -141,6 +141,19 @@ class FileBrowserController extends Controller
         // No permission check needed for resourceGet (always allowed)
 
         $root = $this->getRootPath($request);
+
+        // Auto-create the .trash directory on first listing — the
+        // sidebar's Trash button navigates here BEFORE any delete has
+        // soft-deleted into it, so otherwise the customer's first
+        // click hits 404 ("This location can't be reached"). Idempotent.
+        $normalized = '/' . ltrim($path, '/');
+        if (rtrim($normalized, '/') === '/.trash') {
+            $trashDir = rtrim($root, '/') . '/.trash';
+            if (!is_dir($trashDir)) {
+                @mkdir($trashDir, 0750, true);
+            }
+        }
+
         $resolved = $this->resolve($root, $path);
         if (!$resolved) {
             return $this->withCacheHeaders(response()->json('not found', 404));
